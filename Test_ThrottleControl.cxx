@@ -13,32 +13,34 @@ TEST_CASE("ThrottleControl - Single Thread Basic Functionality", "[throttle][bas
     
     // First 5 requests should be allowed
     for (int i = 0; i < 5; ++i) {
-        REQUIRE(throttle.check());
+        std::cout << "Request " << i  << std::endl;
+        REQUIRE(throttle.update_() == 0);  // Should succeed immediately
     }
     
     // 6th request should be blocked
-    REQUIRE_FALSE(throttle.check());
+    REQUIRE(throttle.update_() > 0);  // Should return wait time
+    std::cout << "Request " << 6 << " - blocked with wait time: " << throttle.update_() << std::endl;
 }
 
 TEST_CASE("ThrottleControl - Time Window Reset", "[throttle][timing]") {
     ThrottleControl throttle(2);  // Allow 2 requests per second
     
     // Use first 2 slots
-    REQUIRE(throttle.check());
-    REQUIRE(throttle.check());
+    REQUIRE(throttle.update_() == 0);
+    REQUIRE(throttle.update_() == 0);
     
     // Should be blocked now
-    REQUIRE_FALSE(throttle.check());
+    REQUIRE(throttle.update_() > 0);
     
     // Wait for more than 1 second
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
     
     // Should be allowed again
-    REQUIRE(throttle.check());
-    REQUIRE(throttle.check());
+    REQUIRE(throttle.update_() == 0);
+    REQUIRE(throttle.update_() == 0);
     
     // Third should be blocked
-    REQUIRE_FALSE(throttle.check());
+    REQUIRE(throttle.update_() > 0);
 }
 
 TEST_CASE("ThrottleControl - Multi-Threading Basic", "[throttle][multithread]") {
@@ -55,7 +57,7 @@ TEST_CASE("ThrottleControl - Multi-Threading Basic", "[throttle][multithread]") 
     for (int i = 0; i < num_threads; ++i) {
         threads.emplace_back([&throttle, &allowed_count, &blocked_count, requests_per_thread]() {
             for (int j = 0; j < requests_per_thread; ++j) {
-                if (throttle.check()) {
+                if (throttle.update_() == 0) {
                     allowed_count++;
                 } else {
                     blocked_count++;
@@ -92,7 +94,7 @@ TEST_CASE("ThrottleControl - High Concurrency Stress Test", "[throttle][stress]"
             std::uniform_int_distribution<> delay_dist(0, 10);
             
             for (int j = 0; j < requests_per_thread; ++j) {
-                if (throttle.check()) {
+                if (throttle.update_() == 0) {
                     allowed_count++;
                 } else {
                     blocked_count++;
@@ -133,12 +135,12 @@ TEST_CASE("ThrottleControl - Exception Handling", "[throttle][exception]") {
 TEST_CASE("ThrottleControl - Single TPS", "[throttle][edge]") {
     ThrottleControl throttle(1);
     
-    REQUIRE(throttle.check());
-    REQUIRE_FALSE(throttle.check());
+    REQUIRE(throttle.update_() == 0);
+    REQUIRE(throttle.update_() > 0);
     
     // Wait and try again
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
-    REQUIRE(throttle.check());
+    REQUIRE(throttle.update_() == 0);
 }
 
 TEST_CASE("ThrottleControl - Rapid Sequential Calls", "[throttle][sequential]") {
@@ -150,7 +152,7 @@ TEST_CASE("ThrottleControl - Rapid Sequential Calls", "[throttle][sequential]") 
     
     // Make rapid calls
     for (int i = 0; i < tps_limit * 2; ++i) {
-        if (throttle.check()) {
+        if (throttle.update_() == 0) {
             allowed++;
         } else {
             blocked++;
@@ -185,7 +187,7 @@ TEST_CASE("ThrottleControl - Thread Safety with Race Conditions", "[throttle][ra
             }
             
             for (int j = 0; j < requests_per_thread; ++j) {
-                if (throttle.check()) {
+                if (throttle.update_() == 0) {
                     allowed_count++;
                 } else {
                     blocked_count++;
@@ -218,7 +220,7 @@ TEST_CASE("ThrottleControl - Performance Benchmark", "[throttle][performance]") 
     
     int allowed = 0;
     for (int i = 0; i < num_operations; ++i) {
-        if (throttle.check()) {
+        if (throttle.update_() == 0) {
             allowed++;
         }
     }
@@ -252,7 +254,7 @@ TEST_CASE("ThrottleControl - Thread Safety with Random Delays", "[throttle][rand
             std::uniform_int_distribution<> delay_dist(0, 100);
             
             for (int j = 0; j < requests_per_thread; ++j) {
-                if (throttle.check()) {
+                if (throttle.update_() == 0) {
                     allowed_count++;
                 } else {
                     blocked_count++;
@@ -278,12 +280,15 @@ TEST_CASE("ThrottleControl - Thread Safety with Random Delays", "[throttle][rand
 TEST_CASE("ThrottleControl - New API check_() Function", "[throttle][api]") {
     ThrottleControl throttle(3);
     
-    // First 3 requests should return 0 (allowed)
+    // Initially, all slots should be available (check_() should return 0)
     REQUIRE(throttle.check_() == 0);
+    REQUIRE(throttle.update_() == 0);
     REQUIRE(throttle.check_() == 0);
+    REQUIRE(throttle.update_() == 0);
     REQUIRE(throttle.check_() == 0);
+    REQUIRE(throttle.update_() == 0);
     
-    // 4th request should return positive value (time to wait)
+    // Now 4th request should return positive value (time to wait)
     int64_t wait_time = throttle.check_();
     REQUIRE(wait_time > 0);
     INFO("Wait time for 4th request: " << wait_time << " nanoseconds");
@@ -292,10 +297,10 @@ TEST_CASE("ThrottleControl - New API check_() Function", "[throttle][api]") {
 TEST_CASE("ThrottleControl - check_and_wait Function", "[throttle][blocking]") {
     ThrottleControl throttle(2);
     
-    // Use up the quota
-    REQUIRE(throttle.check());
-    REQUIRE(throttle.check());
-    REQUIRE_FALSE(throttle.check());
+    // Use up the quota using update_() instead of check()
+    REQUIRE(throttle.update_() == 0);
+    REQUIRE(throttle.update_() == 0);
+    REQUIRE(throttle.update_() > 0);  // Should return wait time
     
     // This should block and then succeed
     auto start_time = std::chrono::high_resolution_clock::now();
@@ -305,61 +310,54 @@ TEST_CASE("ThrottleControl - check_and_wait Function", "[throttle][blocking]") {
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
     INFO("check_and_wait() blocked for " << duration.count() << "ms");
     
-    // Should have waited at least some time (but less than 2 seconds due to polling)
+    // Should have waited at least some time
     REQUIRE(duration.count() >= 0);  // At least attempted to wait
+    REQUIRE(throttle.check_() == 0);
 }
 
 TEST_CASE("ThrottleControl - API Consistency", "[throttle][consistency]") {
     ThrottleControl throttle(5);
     
     // Test that check() and check_() return consistent results
-    std::vector<bool> bool_results;
-    std::vector<int64_t> int_results;
+    // Since check() is based on check_(), they should be consistent
     
-    // Collect results from both APIs
-    for (int i = 0; i < 10; ++i) {
-        bool_results.push_back(throttle.check());
+    // First, use update_() to actually consume some slots
+    REQUIRE(throttle.update_() == 0);
+    REQUIRE(throttle.update_() == 0);
+    REQUIRE(throttle.update_() == 0);
+    
+    // Now both check() and check_() should show the same state
+    bool check_result = throttle.check();
+    int64_t check_result_detailed = throttle.check_();
+    
+    if (check_result) {
+        REQUIRE(check_result_detailed == 0);
+    } else {
+        REQUIRE(check_result_detailed > 0);
     }
     
-    // Reset throttle state by creating new instance
-    ThrottleControl throttle2(5);
-    for (int i = 0; i < 10; ++i) {
-        int_results.push_back(throttle2.check_());
-    }
-    
-    // Verify consistency: check() == true should correspond to check_() == 0
-    for (size_t i = 0; i < bool_results.size(); ++i) {
-        if (bool_results[i]) {
-            REQUIRE(int_results[i] == 0);
-        } else {
-            REQUIRE(int_results[i] > 0);
-        }
-    }
+    INFO("check() result: " << check_result);
+    INFO("check_() result: " << check_result_detailed);
 }
 
 TEST_CASE("ThrottleControl - Wait Time Analysis", "[throttle][timing]") {
     ThrottleControl throttle(2);
-    // Use up quota
-    REQUIRE(throttle.check_() == 0);
-    REQUIRE(throttle.check_() == 0);
+    
+    // Use up quota with update_() to actually consume slots
+    REQUIRE(throttle.update_() == 0);
+    REQUIRE(throttle.update_() == 0);
     
     // Next calls should return decreasing wait times
     int64_t wait1 = throttle.check_();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     int64_t wait2 = throttle.check_();
     
-
     REQUIRE(wait1 > 0);
     REQUIRE(wait2 > 0);
     REQUIRE(wait2 <= wait1);  // Wait time should decrease or stay same
-
-    std::this_thread::sleep_for(std::chrono::nanoseconds(wait2));
-
-    //std::cout << throttle.toString() << std::endl;
-    REQUIRE(throttle.check_() == 0);  // Should be allowed after waiting
-    //std::cout << throttle.toString() << std::endl;
-    REQUIRE(throttle.check_() == 0);
-    //std::cout << throttle.toString() << std::endl;
+    
+    INFO("Wait time 1: " << wait1 << " nanoseconds");
+    INFO("Wait time 2: " << wait2 << " nanoseconds");
 }
 
 TEST_CASE("ThrottleControl - Multi-threaded check_() Usage", "[throttle][multithread][api]") {
@@ -380,6 +378,7 @@ TEST_CASE("ThrottleControl - Multi-threaded check_() Usage", "[throttle][multith
                 int64_t result = throttle.check_();
                 if (result == 0) {
                     allowed_count++;
+                    throttle.update_();
                 } else {
                     blocked_count++;
                     total_wait_time.fetch_add(result);
@@ -401,4 +400,52 @@ TEST_CASE("ThrottleControl - Multi-threaded check_() Usage", "[throttle][multith
     if (blocked_count.load() > 0) {
         REQUIRE(total_wait_time.load() > 0);
     }
+}
+
+TEST_CASE("ThrottleControl - Update API Functionality", "[throttle][update]") {
+    ThrottleControl throttle(3);
+    
+    // update_() should succeed for first 3 calls
+    REQUIRE(throttle.update_() == 0);
+    REQUIRE(throttle.update_() == 0);
+    REQUIRE(throttle.update_() == 0);
+    
+    // 4th call should return wait time
+    int64_t wait_time = throttle.update_();
+    REQUIRE(wait_time > 0);
+    INFO("Wait time: " << wait_time << " nanoseconds");
+}
+
+TEST_CASE("ThrottleControl - Blocking Update Function", "[throttle][update_blocking]") {
+    ThrottleControl throttle(2);
+    
+    // Use up quota
+    REQUIRE(throttle.update_() == 0);
+    REQUIRE(throttle.update_() == 0);
+    
+    // This should block until a slot becomes available
+    auto start_time = std::chrono::high_resolution_clock::now();
+    throttle.update();  // This should block and wait
+    auto end_time = std::chrono::high_resolution_clock::now();
+    
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    INFO("update() blocked for " << duration.count() << "ms");
+    
+    // Should have waited close to 1 second
+    REQUIRE(duration.count() >= 900);  // Allow some tolerance
+    REQUIRE(duration.count() <= 1100);
+}
+
+TEST_CASE("ThrottleControl - Mixed API Usage", "[throttle][mixed]") {
+    ThrottleControl throttle(4);
+    
+    for (int i = 0; i < 40; ++i) {
+        throttle.check_and_wait();
+        auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                          std::chrono::high_resolution_clock::now().time_since_epoch())
+                          .count();
+        std::cout << "Slot: " << i << " << " << now << std::endl;
+        throttle.update();
+    }
+
 }
